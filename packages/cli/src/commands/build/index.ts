@@ -436,15 +436,12 @@ export default async function main(client: Client): Promise<number> {
 
   // A per-directory link (`<dir>/.vercel/project.json`) doesn't report a
   // `repoRoot` like a repo-level (`repo.json`) link does, so the build would
-  // treat the linked subdirectory as the repo root. Re-anchor it to the
-  // detected root and express the project relative to that root, so it behaves
-  // like a repo-level link regardless of where the command was run.
-  if (
-    !hasRepoLevelLink &&
-    link &&
-    project?.settings &&
-    process.env.VERCEL_RESOLVE_ROOT_DIRECTORY === '1'
-  ) {
+  // treat the linked subdirectory as the repo root. When an ancestor workspace
+  // claims the directory as a member package, re-anchor to that root and
+  // express the project relative to it, so it behaves like a repo-level link
+  // regardless of where the command was run. Directories not claimed by any
+  // workspace are left untouched.
+  if (!hasRepoLevelLink && link && project?.settings) {
     const resolved = resolvePerDirectoryLinkRoot(
       invokedCwd,
       project.settings.rootDirectory
