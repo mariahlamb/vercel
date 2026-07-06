@@ -81,6 +81,17 @@ import { AGENT_REASON, AGENT_STATUS } from '../../util/agent-output-constants';
 import { cleanupCorepack, initCorepack } from '../../util/build/corepack';
 import { importBuilders } from '../../util/build/import-builders';
 import { setMonorepoDefaultSettings } from '../../util/build/monorepo';
+import {
+  detectFirstDeploymentFramework,
+  detectAllFrameworks,
+  isFrameworkDetectionEnabled,
+  warnIfFrameworkMismatch,
+  type DetectedFramework,
+} from '../../util/build/framework-detection';
+import {
+  validateBuildOutput,
+  reportBuildOutputProblems,
+} from '../../util/build/validate-build-output';
 import { scrubArgv } from '../../util/build/scrub-argv';
 import { scopeRoutesToServiceOwnership } from '../../util/build/service-route-ownership';
 import { sortBuilders } from '../../util/build/sort-builders';
@@ -224,6 +235,12 @@ export interface BuildsManifest {
     speedInsightsVersion?: string | undefined;
     webAnalyticsVersion?: string | undefined;
   };
+  /**
+   * Result of first-deployment framework detection. Present whenever the
+   * build ran, with `status` distinguishing a positive detection from
+   * "nothing detected" and "did not run".
+   */
+  detectedFramework?: DetectedFramework;
 }
 
 export default async function main(client: Client): Promise<number> {
@@ -759,6 +776,30 @@ async function doBuild(
     ...pickOverrides(localConfig),
   };
 
+  // On a project's first deployment, detect the framework when none is
+  // configured. Mutates `projectSettings` in place so the `detectBuilders`
+  // call below sees the detected framework; must therefore run before it.
+  // The result is always recorded in `builds.json`, including when detection
+  // was skipped or found nothing.
+  buildsJson.detectedFramework = await span
+    .child('vc.detectFirstDeploymentFramework', {
+      enabled: String(isFrameworkDetectionEnabled()),
+      firstDeployment: String(process.env.VERCEL_FIRST_DEPLOYMENT === '1'),
+      configuredFramework: projectSettings.framework ?? undefined,
+    })
+    .trace(async s => {
+      const result = await detectFirstDeploymentFramework({
+        workPath,
+        projectSettings,
+      });
+      s.setAttributes({
+        detectionStatus: result.status,
+        detectedFramework: result.slug,
+        detectedFrameworkVersion: result.version,
+      });
+      return result;
+    });
+
   if (
     process.env.VERCEL_BUILD_MONOREPO_SUPPORT === '1' &&
     pkg?.scripts?.['vercel-build'] === undefined &&
@@ -784,6 +825,32 @@ async function doBuild(
   const files = (await getFiles(workPath, {})).map(f =>
     normalizePath(relative(workPath, f))
   );
+
+  // Framework detection for the end-of-build cross-check, started here so it
+  // runs concurrently with the builders instead of adding latency.
+  const detectedFrameworksPromise = span
+    .child('vc.detectAllFrameworks', {
+      enabled: String(isFrameworkDetectionEnabled()),
+    })
+    .trace(async s => {
+      if (!isFrameworkDetectionEnabled()) {
+        return [] as string[];
+      }
+      try {
+        const slugs = await detectAllFrameworks(workPath);
+        s.setAttributes({
+          detectedFrameworks: slugs.join(',') || undefined,
+          detectedFrameworkCount: String(slugs.length),
+        });
+        return slugs;
+      } catch (err) {
+        output.debug(`Framework cross-check detection failed: ${err}`);
+        s.setAttributes({
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return [] as string[];
+      }
+    });
 
   const routesResult = getTransformedRoutes(localConfig);
   if (routesResult.error) {
@@ -2139,6 +2206,39 @@ async function doBuild(
   }
 
   await writeFlagsJSON(buildResults.values(), outputDir);
+
+  // Warn when the detected frameworks don't match how the project was built.
+  await span.child('vc.frameworkCrossCheck').trace(async s => {
+    const detectedFrameworks = await detectedFrameworksPromise;
+    const executedBuilders = Array.from(buildResults.keys());
+    const usedBuilders = executedBuilders
+      .map(b => b.use)
+      .filter((use): use is string => Boolean(use));
+    const mismatchResult = warnIfFrameworkMismatch({
+      configuredFramework: projectSettings.framework,
+      detectedFrameworks,
+      usedBuilders,
+      usedFrameworks: executedBuilders.map(b => b.config?.framework),
+    });
+    s.setAttributes({
+      result: mismatchResult,
+      configuredFramework: projectSettings.framework ?? undefined,
+      detectedFrameworks: detectedFrameworks.join(',') || undefined,
+      usedBuilders: usedBuilders.join(',') || undefined,
+    });
+  });
+
+  await span.child('vc.validateBuildOutput').trace(async s => {
+    const outputProblems = await validateBuildOutput(outputDir);
+    s.setAttributes({
+      problemCount: String(outputProblems.length),
+      problems:
+        outputProblems.map(p => `${p.severity}: ${p.message}`).join('; ') ||
+        undefined,
+    });
+    reportBuildOutputProblems(outputProblems);
+  });
+
   collectSpan.stop();
 
   const relOutputDir = relative(cwd, outputDir);

@@ -3429,9 +3429,14 @@ writeFileSync(
     const cwd = fixture('static');
     const outputDir = join(cwd, '.vercel/output');
 
-    // Run the full CLI entry point so index.ts writes cli_traces.json
+    // Run the full CLI entry point so index.ts writes cli_traces.json.
+    // Framework detection is opt-in, so enable it to assert its spans.
     const cliPath = join(__dirname, '../../../../dist/vc.js');
-    execSync(`node ${cliPath} build`, { cwd, stdio: 'pipe' });
+    execSync(`node ${cliPath} build`, {
+      cwd,
+      stdio: 'pipe',
+      env: { ...process.env, VERCEL_FRAMEWORK_DETECTION: '1' },
+    });
 
     // Read trace events written to disk
     const tracePath = join(outputDir, 'diagnostics', 'cli_traces.json');
@@ -3471,9 +3476,13 @@ writeFileSync(
         { name: 'vc.doBuild', parent: 'vc' },
         { name: 'vc.loadEnv', parent: 'vc' },
         { name: 'vc.compileVercelConfig', parent: 'vc.doBuild' },
+        { name: 'vc.detectFirstDeploymentFramework', parent: 'vc.doBuild' },
+        { name: 'vc.detectAllFrameworks', parent: 'vc.doBuild' },
         { name: 'vc.detectBuilders', parent: 'vc.doBuild' },
         { name: 'vc.importBuilders', parent: 'vc.doBuild' },
         { name: 'vc.builder', parent: 'vc.doBuild' },
+        { name: 'vc.frameworkCrossCheck', parent: 'vc.doBuild' },
+        { name: 'vc.validateBuildOutput', parent: 'vc.doBuild' },
         { name: 'vc.finalizeBuildOutput', parent: 'vc.doBuild' },
         { name: 'vc.postCommand', parent: 'vc.cli' },
       ])
