@@ -254,8 +254,9 @@ export async function getUpdateCommandInfo(): Promise<{
     }
     const install = cliType === 'yarn' ? 'global add' : 'i -g';
     const force = cliType === 'npm' ? ' --force' : '';
+    const allowBuild = pnpmAllowBuildFlag(cliType, nativePackageName);
     return {
-      command: `${cliType} ${install} ${pkgAndVersion}${force}`,
+      command: `${cliType} ${install} ${pkgAndVersion}${force}${allowBuild}`,
       global: true,
     };
   }
@@ -268,7 +269,19 @@ export async function getUpdateCommandInfo(): Promise<{
     install = yarn ? 'global add' : 'i -g';
   }
 
-  return { command: `${cliType} ${install} ${pkgAndVersion}`, global };
+  // Global-only: on a local install pnpm would persist the approval into
+  // the project's pnpm-workspace.yaml, which belongs to the project owner.
+  const allowBuild = global ? pnpmAllowBuildFlag(cliType, 'esbuild') : '';
+  return {
+    command: `${cliType} ${install} ${pkgAndVersion}${allowBuild}`,
+    global,
+  };
+}
+
+// pnpm v10+ skips dependency build scripts (e.g. esbuild's postinstall)
+// without approval; pre-approve the one this install needs
+function pnpmAllowBuildFlag(cliType: string, pkg: string): string {
+  return cliType === 'pnpm' ? ` --allow-build=${pkg}` : '';
 }
 
 export default async function getUpdateCommand(): Promise<string> {

@@ -27,7 +27,9 @@ describe('getUpdateCommand', () => {
 
     const updateCommand = await getUpdateCommand();
     if (await isGlobal()) {
-      expect(updateCommand).toEqual(`pnpm i -g vercel@latest`);
+      expect(updateCommand).toEqual(
+        `pnpm i -g vercel@latest --allow-build=esbuild`
+      );
     } else {
       expect(updateCommand).toEqual(`pnpm i vercel@latest`);
     }
@@ -145,7 +147,7 @@ describe('getUpdateCommand', () => {
       );
 
       expect(await getUpdateCommand()).toEqual(
-        'pnpm i -g @vercel/vc-native@latest'
+        'pnpm i -g @vercel/vc-native@latest --allow-build=@vercel/vc-native'
       );
     });
 
