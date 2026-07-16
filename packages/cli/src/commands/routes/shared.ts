@@ -1,14 +1,20 @@
 import chalk from 'chalk';
 import type Client from '../../util/client';
-import { parseArguments } from '../../util/get-args';
-import { getFlagsSpecification } from '../../util/get-flags-specification';
 import { printError } from '../../util/error';
 import { getCommandName, getCommandNamePlain } from '../../util/pkg-name';
 import output from '../../output-manager';
-import { outputAgentError, buildCommandWithYes } from '../../util/agent-output';
+import {
+  outputAgentError,
+  buildCommandWithYes,
+  withGlobalFlags,
+} from '../../util/agent-output';
 import { AGENT_STATUS, AGENT_REASON } from '../../util/agent-output-constants';
-import { getGlobalFlagsOnlyFromArgs } from '../../util/arg-common';
+import { getGlobalFlagsFromArgs } from '../../util/arg-common';
 import type { Command } from '../help';
+import {
+  parseSubcommandArguments,
+  type ParsedSubcommandArguments,
+} from '../../util/command-arguments';
 import {
   getRouteTypeLabel,
   isTargetTransform,
@@ -17,22 +23,6 @@ import {
   type RouteVersion,
   type Transform,
 } from '../../util/routes/types';
-
-export interface ParsedSubcommand {
-  args: string[];
-  flags: { [key: string]: any };
-}
-
-/**
- * Plain suggested command with global flags from argv (--cwd, --non-interactive, etc.).
- */
-export function withGlobalFlags(
-  client: Client,
-  commandTemplate: string
-): string {
-  const flags = getGlobalFlagsOnlyFromArgs(client.argv.slice(2));
-  return getCommandNamePlain(`${commandTemplate} ${flags.join(' ')}`.trim());
-}
 
 /**
  * Shell-escape route identifier for suggested `next` commands. Uses single
@@ -58,17 +48,15 @@ export async function parseSubcommandArgs(
   argv: string[],
   command: Command,
   client?: Client
-): Promise<ParsedSubcommand | number> {
+): Promise<ParsedSubcommandArguments | number> {
   let parsedArgs;
-  const flagsSpecification = getFlagsSpecification(command.options);
 
   try {
-    // @ts-expect-error - TypeScript complains about the flags specification type
-    parsedArgs = parseArguments(argv, flagsSpecification);
+    parsedArgs = parseSubcommandArguments(argv, command);
   } catch (err) {
     if (client?.nonInteractive) {
       const rawMessage = err instanceof Error ? err.message : String(err);
-      const flags = getGlobalFlagsOnlyFromArgs(client.argv.slice(2));
+      const flags = getGlobalFlagsFromArgs(client.argv.slice(2));
       let message = rawMessage;
       let next: Array<{ command: string; when?: string }> = [
         {
@@ -166,18 +154,6 @@ export async function confirmAction(
   }
 
   return await client.input.confirm(message, false);
-}
-
-export function validateRequiredArgs(
-  args: string[],
-  required: string[]
-): string | null {
-  for (let i = 0; i < required.length; i++) {
-    if (!args[i]) {
-      return `Missing required argument: ${required[i]}`;
-    }
-  }
-  return null;
 }
 
 /**
