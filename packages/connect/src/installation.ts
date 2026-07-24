@@ -5,27 +5,26 @@ import {
   validateWebhookUrl,
 } from './internal/url-validation.js';
 import type { ConnectTokenParams } from './token.js';
+import { createConnectErrorFromResponse } from './token.js';
 
-export interface ConnectAuthorizationOptions {
+export type ConnectInstallationParams = Omit<ConnectTokenParams, 'subject'>;
+
+export interface ConnectInstallationOptions {
   vercelToken?: string;
-  callbackUrl?: string;
+  returnUrl?: string;
   webhook?: string;
+  tenantId?: string;
   deviceCode?: boolean;
   expiresInMs?: number;
 }
 
-export interface ConnectAuthorizationResponse {
+export interface ConnectInstallationResponse {
   request: string;
   verifier: string;
   url: string;
   deviceCode?: string;
-  expiresAt?: number;
-  /**
-   * Connector (client) being authorized, matching the `connector`
-   * object on the Vercel Connect token response. Present once the
-   * Vercel API supports returning it.
-   */
-  connector?: {
+  expiresAt: number;
+  connector: {
     /** Client id. */
     id: string;
     /** Client uid. */
@@ -45,42 +44,38 @@ export interface ConnectAuthorizationResponse {
   };
 }
 
-export async function startAuthorization(
+/**
+ * Create an operator installation request for an app-scoped connector.
+ *
+ * @experimental This API is feature-gated while experimental. Contact Vercel
+ * to enable access before using it.
+ */
+export async function experimental_startInstallation(
   connector: string,
-  params: ConnectTokenParams,
-  options?: ConnectAuthorizationOptions
-): Promise<ConnectAuthorizationResponse> {
+  params: ConnectInstallationParams = {},
+  options?: ConnectInstallationOptions
+): Promise<ConnectInstallationResponse> {
   if (!connector) {
     throw new Error('connector is required');
   }
+
   const detachedInteractiveAuth = isDetachedInteractiveAuth();
-  if (!detachedInteractiveAuth && options?.callbackUrl !== undefined) {
-    validateCallbackUrl(options.callbackUrl);
+
+  if (!detachedInteractiveAuth && options?.returnUrl !== undefined) {
+    validateCallbackUrl(options.returnUrl, 'returnUrl');
   }
   if (options?.webhook !== undefined) {
     validateWebhookUrl(options.webhook);
   }
 
   const vercelToken = options?.vercelToken ?? (await getVercelOidcToken());
-  const endpoint = `https://api.vercel.com/v1/connect/authorize/${encodeURIComponent(connector)}`;
+  const endpoint = `https://api.vercel.com/v1/connect/install/${encodeURIComponent(connector)}`;
   const deviceCode =
     options?.deviceCode ?? (detachedInteractiveAuth ? true : undefined);
   const returnUrl =
-    !detachedInteractiveAuth && options?.callbackUrl !== undefined
-      ? { returnUrl: options.callbackUrl }
+    !detachedInteractiveAuth && options?.returnUrl !== undefined
+      ? { returnUrl: options.returnUrl }
       : {};
-
-  const body = {
-    ...params,
-    ...returnUrl,
-    ...(options?.webhook !== undefined && { webhook: options.webhook }),
-    ...(deviceCode !== undefined && {
-      deviceCode,
-    }),
-    ...(options?.expiresInMs !== undefined && {
-      expiresInMs: options.expiresInMs,
-    }),
-  };
 
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -89,19 +84,25 @@ export async function startAuthorization(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${vercelToken}`,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      ...params,
+      ...returnUrl,
+      ...(options?.webhook !== undefined && { webhook: options.webhook }),
+      ...(options?.tenantId !== undefined && { tenantId: options.tenantId }),
+      ...(deviceCode !== undefined && { deviceCode }),
+      ...(options?.expiresInMs !== undefined && {
+        expiresInMs: options.expiresInMs,
+      }),
+    }),
   });
 
   if (!response.ok) {
-    let errorText: string | undefined;
-    try {
-      errorText = await response.text();
-    } catch {}
-    throw new Error(
-      `Failed to start authorization: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ''}`
+    throw await createConnectErrorFromResponse(
+      response,
+      'Failed to start installation'
     );
   }
 
-  const data: ConnectAuthorizationResponse = await response.json();
+  const data: ConnectInstallationResponse = await response.json();
   return data;
 }
